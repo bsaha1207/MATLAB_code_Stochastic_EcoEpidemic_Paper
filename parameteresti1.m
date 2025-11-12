@@ -1,6 +1,7 @@
-% --------- FAST LHS SAMPLING TO 500,000 ROWS ---------
+% --------- LHS parameter sampling with truncated-Gamma for beta_ij and alpha_i ---------
 clc; clear; rng(42);
-N = 50000;  % target sample size
+
+N = 10000;  % number of rows (samples)
 
 % ---- Parameter names (51 total) ----
 names = { ...
@@ -22,81 +23,124 @@ names = { ...
 
 % ---- Lower/Upper bounds (match order exactly) ----
 lo = [ ...
-  0.005, 0.002, 0.001, ...
-  0.004, 0.002, 0.001, ...
-  82.13, 68.57, 144.32, ...
-  43.30, 10.82, 28.01, 54.12, 14.43, 0.0145, 75.77, 39.69, 28.86, ...
-  0.06,  0.01,  0.01,  0.01,  0.06,  0.01,  0.01,  0.01,  0.06, ...
-  3e-5,  3e-5,  3e-5, ...
-  0.75,  0.75,  0.75, ...
-  0.0,   0.0,   0.0, ...
-  1e1,   1e1,   1e1, ...
-  2.0, ...
-  0.1,   0.1,   0.1, ...
-  0.1, ...
-  0.1,   0.1,   0.1, ...
-  0.1,   0.1,   0.1, ...
-  0.1];
+  0.005, 0.002, 0.001, ...                            % D1..D3
+  0.004, 0.002, 0.001, ...                            % V1..V3
+  82.13, 68.57, 144.32, ...                           % c1..c3
+  43.30, 10.82, 28.01, 54.12, 14.43, 0.0145, 75.77, 39.69, 28.86, ...  % b_ij
+  0.06,  0.01,  0.01,  0.01,  0.06,  0.01,  0.01,  0.01,  0.06, ...   % beta_ij
+  3e-6,  3e-6,  3e-6,  ...                              % alpha_i
+  0.75,  0.75,  0.75, ...                              % gamma_i
+  0.0,   0.0,   0.0,  ...                              % mu_i
+  1e1,   1e1,   1e1,  ...                              % rho_i  (log-uniform)
+  2.0, ...                                             % delta
+  0.1,   0.1,   0.1, ...                               % sigma_i
+  0.1, ...                                             % sigma_E
+  0.1,   0.1,   0.1, ...                               % gamma_jump i
+  0.1,   0.1,   0.1, ...                               % lambda_I i
+  0.1];                                                % lambda_E
 
 hi = [ ...
-  0.5,  0.2,  0.1, ...
-  0.4,  0.2,  0.1, ...
-  99.97, 83.47, 175.68, ...
-  52.70, 13.18, 34.09, 65.88, 17.57, 0.0177, 92.23, 48.31, 35.14, ...
-  2.52,   1.001,   1.001,   1.01,   1.52,   1.001,   1.001,   1.001,   1.52, ...
-  3e-2,  3e-2,  3e-2, ...
-  1.08,  1.08,  1.08, ...
-  0.3,   0.3,   0.3, ...
-  1e3,   1e3,   1e3, ...
-  10.0, ...
-  1.2,   1.2,   1.2, ...
-  1.5, ...
-  1.20,  1.20,  1.20, ...
-  1.5,   1.5,   1.5, ...
-  1.2];
+  0.5,  0.2,  0.1, ...                                % D1..D3
+  0.4,  0.2,  0.1, ...                                % V1..V3
+  99.97, 83.47, 175.68, ...                           % c1..c3
+  52.70, 13.18, 34.09, 65.88, 17.57, 0.0177, 92.23, 48.31, 35.14, ...  % b_ij
+  1.52,  1.5,   1.5,   1.5,   1.5,   1.5,   1.5,   1.5,   1.52, ...    % beta_ij
+  3e-2,  3e-2,  3e-2,  ...                              % alpha_i
+  1.08,  1.08,  1.08, ...                              % gamma_i
+  0.3,   0.3,   0.3,  ...                              % mu_i
+  1e3,   1e3,   1e3,  ...                              % rho_i (log-uniform)
+  10.0, ...                                            % delta
+  1.2,   1.2,   1.2, ...                               % sigma_i
+  1.5, ...                                             % sigma_E
+  1.20,  1.20,  1.20, ...                              % gamma_jump i
+  1.5,   1.5,   1.5, ...                               % lambda_I i
+  1.2];                                                % lambda_E
 
 % ---- Sanity checks ----
 d = numel(names);
 assert(numel(lo)==d && numel(hi)==d, 'lo/hi must match number of names.');
 assert(all(hi > lo), 'All hi must be greater than lo.');
 
-% ---- Which parameters are log-uniform? ----
+% ---- Distribution flags/indices ----
 isLog = false(1,d);
-isLog(strcmp(names,'alpha_1')) = true;
-isLog(strcmp(names,'alpha_2')) = true;
-isLog(strcmp(names,'alpha_3')) = true;
-isLog(strcmp(names,'rho_1'))   = true;
-isLog(strcmp(names,'rho_2'))   = true;
-isLog(strcmp(names,'rho_3'))   = true;
+% Keep rho_* as log-uniform (order-of-magnitude variability)
+isLog(strcmp(names,'rho_1')) = true;
+isLog(strcmp(names,'rho_2')) = true;
+isLog(strcmp(names,'rho_3')) = true;
+
+beta_idx  = ismember(names, {'beta_11','beta_12','beta_13', ...
+                             'beta_21','beta_22','beta_23', ...
+                             'beta_31','beta_32','beta_33'});
+
+alpha_idx = ismember(names, {'alpha_1','alpha_2','alpha_3'});
+
+% By default, map linearly; but exclude columns we will overwrite via Gamma
 lin = ~isLog;
+lin(beta_idx)  = false;   % will fill via truncated-Gamma
+lin(alpha_idx) = false;   % will fill via truncated-Gamma
 
-% ---- FAST LHS (no 'maximin' to avoid O(N^2) cost) ----
-U = lhsdesign(N, d);   % N-by-d in (0,1), very fast even for N=5e5
+% ---- LHS uniforms (no maximin—fast & scalable) ----
+U = lhsdesign(N, d);   % N-by-d in (0,1)
 
-% ---- Map to parameter ranges (vectorized) ----
+% ---- Allocate ----
 X = zeros(N,d);
-% linear-uniform columns
-X(:,lin) = U(:,lin) .* (hi(lin) - lo(lin)) + lo(lin);
-% log-uniform columns
+
+% ---- Linear-uniform columns (not log, not beta/alpha)
+if any(lin)
+    X(:,lin) = U(:,lin) .* (hi(lin) - lo(lin)) + lo(lin);
+end
+
+% ---- Log-uniform columns (here: rho_i)
 if any(isLog)
-    lo10 = log10(lo(isLog)); hi10 = log10(hi(isLog));
+    lo10 = log10(lo(isLog));
+    hi10 = log10(hi(isLog));
     X(:,isLog) = 10.^( U(:,isLog) .* (hi10 - lo10) + lo10 );
 end
 
-% ---- Save (CSV is fast & SPSS-friendly; XLSX for huge tables is slow) ----
+% ---- Truncated-Gamma for beta_ij (CDF rescaling)
+% Choose Gamma parameters for betas (tune as needed)
+k_beta = 2;          % shape
+th_beta = 0.2;      % scale (mean = 0.30)
+
+if any(beta_idx)
+    beta_cols = find(beta_idx);
+    for t = 1:numel(beta_cols)
+        j = beta_cols(t);
+        a = lo(j); b = hi(j);
+        Fa = cdf('Gamma', a, k_beta, th_beta);
+        Fb = cdf('Gamma', b, k_beta, th_beta);
+        Utr = U(:,j) .* (Fb - Fa) + Fa;            % map to [F(a), F(b)]
+        X(:,j) = icdf('Gamma', Utr, k_beta, th_beta);
+    end
+end
+
+% ---- Truncated-Gamma for alpha_i (CDF rescaling)
+% Choose Gamma parameters for alphas so mean ~1e-3
+k_alpha = 2;         % shape
+th_alpha = 5e-4;     % scale (mean = 1e-3)
+
+if any(alpha_idx)
+    alpha_cols = find(alpha_idx);
+    for t = 1:numel(alpha_cols)
+        j = alpha_cols(t);
+        a = lo(j); b = hi(j);
+        Fa = cdf('Gamma', a, k_alpha, th_alpha);
+        Fb = cdf('Gamma', b, k_alpha, th_alpha);
+        Utr = U(:,j) .* (Fb - Fa) + Fa;            % map to [F(a), F(b)]
+        X(:,j) = icdf('Gamma', Utr, k_alpha, th_alpha);
+    end
+end
+
+% ---- Save
 T = array2table(X,'VariableNames',names);
-writetable(T, 'parameter_samples_50knewbeta.xlsx');   % <— recommended
+writetable(T, 'parameter_samples_10000_new.xlsx');
 
-% (Optional) also save the first 100k rows to XLSX for a quick peek:
-%headN = min(100000, N);
-%writetable(T(1:headN,:), 'parameter_samples_500k_preview.xlsx');
-
-%disp('Done: wrote parameter_samples_500k.csv and preview XLSX.');
+fprintf('Done. Wrote parameter_samples_10000_new.xlsx with %d rows and %d columns.\n', N, d);
 
 %%
 
 % ---------- Load ----------
-T = readtable('parameter_samples_50knewbeta.xlsx');   % new file with per-species columns
+T = readtable('parameter_samples_10000_new.xlsx');   % new file with per-species columns
 N = height(T);
 n = 3;
 
@@ -141,13 +185,13 @@ for r = 1:N
     JE = lambdaE * (gE - log(1 + gE));        % scalar
 
     % ---------- Beta matrix (3x3) from nine columns ----------
-   % beta = [T.beta_11(r) T.beta_12(r) T.beta_13(r);
-          %  T.beta_21(r) T.beta_22(r) T.beta_23(r);
-          %  T.beta_31(r) T.beta_32(r) T.beta_33(r)];
+    beta = [T.beta_11(r) T.beta_12(r) T.beta_13(r);
+            T.beta_21(r) T.beta_22(r) T.beta_23(r);
+            T.beta_31(r) T.beta_32(r) T.beta_33(r)];
 
-   beta = [T.beta_11(r) 0 0;
-            0 T.beta_22(r) 0;
-            0 0 T.beta_33(r)];
+   %beta = [T.beta_11(r) 0 0;
+           % 0 T.beta_22(r) 0;
+           % 0 0 T.beta_33(r)];
 
 
     % ---------- Tilde terms (Brownian + jumps; periodic/Neumann) ----------
@@ -169,11 +213,12 @@ end
 
 % ---------- Save back ----------
 T.R0 = R0;
-writetable(T, 'parameter_samples_50knewbeta.xlsx', 'Sheet', 1);
+writetable(T, 'parameter_samples_10000_new.xlsx', 'Sheet', 1);
+
 %%
 
 % Load cleaned dataset
-T = readtable('parameter_samples_50knewbeta.xlsx');  % or parameter_samples_50000.xlsx
+T = readtable('goodoutputdataset.xlsx');  % or parameter_samples_50000.xlsx
 
 % 1) Remove anomalies (if not already removed)
 %T = T(T.R0 <= 10, :);
@@ -211,12 +256,13 @@ statsTable = array2table(summaryStats, ...
 disp(statsTable);
 
 % 5) Save to Excel for supplement
-writetable(statsTable, 'parameter_summary_stats_50knewbeta.xlsx', 'WriteRowNames', true);
+writetable(statsTable, 'goodoutput_summary_stats.xlsx', 'WriteRowNames', true);
+
+
 %%
 
-
 % Load your table
-T = readtable('parameter_samples_50knewbeta.xlsx');   % or parameter_samples_50000.xlsx
+T = readtable('parameter_samples_10000_new.xlsx');   % or parameter_samples_50000.xlsx
 
 % (Optional) keep only sensible rows if you haven't already
 % T = T(T.R0 <= 10, :);
@@ -233,4 +279,5 @@ n0 = sum(T.R0_binary == 0);
 fprintf('R0_binary counts -> 1: %d, 0: %d (total: %d)\n', n1, n0, height(T));
 
 % Save back to Excel (overwrites the file with the new column)
-writetable(T, 'parameter_samples_50knewbeta.xlsx', 'Sheet', 1);
+writetable(T, 'parameter_samples_10000_new.xlsx', 'Sheet', 1);
+
